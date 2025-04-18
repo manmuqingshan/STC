@@ -205,42 +205,45 @@ typedef struct _Reljunk
  * utf8 and _Rune code
  */
 
-static int
+static inline int
 chartorune(_Rune *rune, const char *s)
 {
-    utf8_decode_t ctx = {.state=0};
-    const uint8_t *b = (const uint8_t*)s;
-    do { utf8_decode(&ctx, *b++); } while (ctx.state);
-    *rune = ctx.codep;
-    return (int)((const char*)b - s);
+    utf8_decode_t d = {.state=0};
+    int n = utf8_decode_codepoint(&d, s, NULL);
+    *rune = d.codep;
+    return n;
 }
 
 static const char*
-utfrune(const char *s, _Rune c)
+utfrune(const char *s, _Rune c) // search
 {
-    if (c < 128)        /* ascii */
+    if (c < 0x80)        /* ascii */
         return strchr((char *)s, (int)c);
-    int n;
-    for (_Rune r = (uint32_t)*s; r; s += n, r = *(unsigned char*)s) {
-        if (r < 128) { n = 1; continue; }
-        n = chartorune(&r, s);
-        if (r == c) return s;
+
+    utf8_decode_t d = {.state=0};
+    while (*s != 0) {
+        int n = utf8_decode_codepoint(&d, s, NULL);
+        if (d.codep == c) return s;
+        s += n;
     }
     return NULL;
 }
 
 static const char*
-utfruneicase(const char *s, _Rune c)
-{
-    _Rune r = (uint32_t)*s;
-    int n;
-    if (c < 128) for (c = (_Rune)tolower((int)c); r; ++s, r = *(unsigned char*)s) {
-        if (r < 128 && (_Rune)tolower((int)r) == c) return s;
-    }
-    else for (c = utf8_casefold(c); r; s += n, r = *(unsigned char*)s) {
-        if (r < 128) { n = 1; continue; }
-        n = chartorune(&r, s);
-        if (utf8_casefold(r) == c) return s;
+utfruneicase(const char *s, _Rune c) {
+    if (c < 0x80) {
+        for (int low = tolower((int)c); *s != 0; ++s)
+            if (tolower(*s) == low)
+                return s;
+    } else {
+        utf8_decode_t d = {.state=0};
+        c = utf8_casefold(c);
+        while (*s != 0) {
+            int n = utf8_decode_codepoint(&d, s, NULL);
+            if (utf8_casefold(d.codep) == c)
+                return s;
+            s += n;
+        }
     }
     return NULL;
 }
@@ -559,10 +562,10 @@ _optimize(_Parser *par, _Reprog *pp)
     if ((par->freep - pp->firstinst)*2 > par->instcap)
         return pp;
 
-    isize ipp = (isize)pp; // convert pointer to isize!
+    intptr_t ipp = (intptr_t)pp; // convert pointer to integer!
     isize new_allocsize = c_sizeof(_Reprog) + (par->freep - pp->firstinst)*c_sizeof(_Reinst);
     _Reprog *npp = (_Reprog *)i_realloc(pp, pp->allocsize, new_allocsize);
-    ptrdiff_t diff = (isize)npp - ipp;
+    isize diff = (intptr_t)npp - ipp;
 
     if ((npp == NULL) | (diff == 0))
         return (_Reprog *)ipp;
@@ -621,6 +624,12 @@ _nextc(_Parser *par, _Rune *rp)
             if (*rp == 'Q') {
                 par->litmode = true;
                 continue;
+            }
+            if (*rp == 'x' && *par->exprp == '{') {
+                *rp = (_Rune)strtol(par->exprp + 1, (char **)&par->exprp, 16);
+                if (*par->exprp != '}')
+                    _rcerror(par, CREG_UNMATCHEDRIGHTPARENTHESIS);
+                par->exprp++;
             }
             ret = 1;
         }
@@ -727,14 +736,6 @@ _lex(_Parser *par)
         case 'A': return TOK_BOS;
         case 'z': return TOK_EOS;
         case 'Z': return TOK_EOZ;
-        case 'x': /* hex number rune */
-            if (*par->exprp != '{') break;
-            sscanf(++par->exprp, "%x", &par->yyrune);
-            while (*par->exprp) if (*(par->exprp++) == '}') break;
-            if (par->exprp[-1] != '}')
-                _rcerror(par, CREG_UNMATCHEDRIGHTPARENTHESIS);
-            if (par->yyrune == 0) return TOK_END;
-            break;
         case 'p': case 'P':
             _lexutfclass(par, &par->yyrune);
             break;
@@ -1051,8 +1052,8 @@ _regexec1(const _Reprog *progp,  /* program to run */
                 break;
             }
         }
-        r = *(unsigned char*)s;
-        n = r < 128 ? 1 : chartorune(&r, s);
+        r = *(uint8_t*)s;
+        n = r < 0x80 ? 1 : chartorune(&r, s);
 
         /* switch run lists */
         tl = j->relist[flag];
@@ -1230,40 +1231,39 @@ _regexec(const _Reprog *progp,    /* program to run */
 
 
 static void
-_build_subst(const char* replace, int nmatch, const csview match[],
-             bool(*transform)(int, csview, cstr*), cstr* subst) {
-    cstr_view buf = cstr_getview(subst);
-    isize len = 0, cap = buf.cap;
-    char* dst = buf.data;
-    cstr mstr = {0};
+_build_substitution(const char* replace, int nmatch, const csview match[],
+                    bool(*transform)(int, csview, cstr*), cstr* subst) {
+    cstr_buf mbuf = cstr_getbuf(subst);
+    isize len = 0, cap = mbuf.cap;
+    char* dst = mbuf.data;
+    cstr tr_str = {0};
 
     while (*replace != '\0') {
         if (*replace == '$') {
-            const int arg = *++replace;
-            int g;
-            switch (arg) {
-            case '0': case '1': case '2': case '3': case '4':
-            case '5': case '6': case '7': case '8': case '9':
-                g = arg - '0';
-                if (replace[1] >= '0' && replace[1] <= '9' && replace[2] == ';')
-                    { g = g*10 + (replace[1] - '0'); replace += 2; }
-                if (g < nmatch) {
-                    csview m = transform && transform(g, match[g], &mstr) ? cstr_sv(&mstr) : match[g];
-                    if (len + m.size > cap)
-                        dst = cstr_reserve(subst, cap += cap/2 + m.size);
-                    for (int i = 0; i < m.size; ++i)
-                        dst[len++] = m.buf[i];
+            int arg = replace[1];
+            if (arg >= '0' && arg <= '9') {
+                arg -= '0';
+                if (replace[2] >= '0' && replace[2] <= '9' && replace[3] == ';')
+                    { arg = arg*10 + (replace[2] - '0'); replace += 2; }
+                replace += 2;
+                if (arg < nmatch) {
+                    csview tr_sv = transform && transform(arg, match[arg], &tr_str)
+                                 ? cstr_sv(&tr_str) : match[arg];
+                    if (len + tr_sv.size > cap)
+                        dst = cstr_reserve(subst, cap += cap/2 + tr_sv.size);
+                    for (int i = 0; i < tr_sv.size; ++i)
+                        dst[len++] = tr_sv.buf[i];
                 }
-                ++replace;
-            case '\0':
                 continue;
             }
+            if (arg == '$') // allow e.g. "$$3" => "$3"
+                ++replace;
         }
         if (len == cap)
             dst = cstr_reserve(subst, cap += cap/2 + 4);
         dst[len++] = *replace++;
     }
-    cstr_drop(&mstr);
+    cstr_drop(&tr_str);
     _cstr_set_size(subst, len);
 }
 
@@ -1313,7 +1313,7 @@ cregex_replace_pro(const cregex* re, csview input, const char* replace,
     bool copy = !(rflags & CREG_STRIP);
 
     while (count-- && cregex_match_sv(re, input, match) == CREG_OK) {
-        _build_subst(replace, nmatch, match, transform, &subst);
+        _build_substitution(replace, nmatch, match, transform, &subst);
         const isize mpos = (match[0].buf - input.buf);
         if (copy & (mpos > 0)) cstr_append_n(&out, input.buf, mpos);
         cstr_append_s(&out, subst);

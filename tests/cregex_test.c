@@ -3,6 +3,7 @@
 #include "stc/csview.h"
 #include "stc/algorithm.h"
 #include "ctest.h"
+#include <string.h>
 
 #define M_START(m) ((m).buf - input)
 #define M_END(m) (M_START(m) + (m).size)
@@ -298,4 +299,33 @@ TEST(cregex, replace)
                                            INT32_MAX, NULL, CREG_STRIP));
         EXPECT_STREQ(cstr_str(&str), "31.12.2015;28.02.2022;");
     }
+}
+
+TEST(cregex, hex_range_char_class)
+{
+    EXPECT_EQ(cregex_make("\\x{12", 0).error, CREG_UNMATCHEDRIGHTPARENTHESIS);
+
+    csview match[16];
+    EXPECT_EQ(cregex_match_aio("[\\x{0100}-\\x{0200}]", "aĂb", match), CREG_OK);
+    EXPECT_EQ(cregex_match_aio("[\\x{0100}-\\x{0200}]", "ȁbc", match), CREG_NOMATCH);
+    EXPECT_EQ(cregex_match_aio("[\\x{0100}-\\x{0200}\\x{1}-\\x{7f}]", "ȁbc", match), CREG_OK);
+}
+
+TEST(cregex, utf8_bad_string)
+{
+    csview match[16];
+    const char *bad = "this is bad \xE0\xC0string";
+    EXPECT_EQ(cregex_match_aio("bad.*string", bad, match), CREG_OK);
+    EXPECT_EQ(cregex_match_aio("bad [\\x{FFFD}]+string", bad, match), CREG_OK);
+    EXPECT_EQ(cregex_match_aio("bad [\xC8\x80\xE0\xC0]+string", bad, match), CREG_OK);
+    EXPECT_EQ(cregex_match_aio("\\bstring", bad, match), CREG_OK);
+    EXPECT_EQ(cregex_match_aio("\\wstring", bad, match), CREG_NOMATCH);
+    EXPECT_EQ(cregex_match_aio("\\x{FFFD}\\bstring", bad, match), CREG_OK);
+
+    EXPECT_EQ(0, utf8_icmp(bad, "tHiS iS bAd ��StRiNg"));
+    EXPECT_EQ(0, utf8_icmp("tHiS iS bAd ��StRiNg", bad));
+    EXPECT_GT(0, utf8_icmp("tHiS iS bAd ��StRiN", bad));
+    EXPECT_GT(0, utf8_icmp(bad, "tHiS iS bAd ��StRiNgX"));
+    EXPECT_FALSE(utf8_valid(bad));
+    EXPECT_TRUE(utf8_valid_n(bad, 12));
 }

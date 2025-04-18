@@ -321,8 +321,11 @@ cco_fiber* _cco_new_fiber(cco_task* _task, void* env) {
 }
 
 cco_fiber* _cco_spawn(cco_task* _task, cco_fiber* fb, void* env) {
-    cco_fiber* new_fb = c_new(cco_fiber, {.task=_task, .env=env ? env : fb->env, .next=fb->next});
-    return (fb->next = new_fb);
+    cco_fiber* new_fb;
+    new_fb = fb->next = (fb->next == NULL ? fb : c_new(cco_fiber, {.next=fb->next}));
+    new_fb->task = _task;
+    new_fb->env = (env == NULL ? fb->env : env);
+    return new_fb;
 }
 
 #undef i_implement
@@ -413,8 +416,8 @@ typedef struct { ptrdiff_t count; } cco_semaphore;
       #define _c_LINKC __declspec(dllimport)
     #endif
     struct _FILETIME;
-    _c_LINKC void GetSystemTimeAsFileTime(struct _FILETIME*);
-    _c_LINKC void Sleep(unsigned long);
+    _c_LINKC void __stdcall GetSystemTimeAsFileTime(struct _FILETIME*);
+    _c_LINKC void __stdcall Sleep(unsigned long);
 
     static inline double cco_time(void) { /* seconds since epoch */
         unsigned long long quad;          /* 64-bit value representing 1/10th usecs since Jan 1 1601, 00:00 UTC */

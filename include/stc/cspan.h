@@ -157,13 +157,13 @@ using_cspan_tuple(7); using_cspan_tuple(8);
      .stride=c_literal(cspan_tuple1){.d={1}}}
 
 // Make a fixed size, zeroed out 1d-span (in the local lexical scope).
-#define cspan_make_zeros(Span, FIXED_N) \
-    cspan_from_n((Span##_value[FIXED_N]){0}, FIXED_N)
+#define cspan_zeros(Span, FIXED_N) \
+    ((Span)cspan_from_n((Span##_value[FIXED_N]){0}, FIXED_N))
 
 // May make a global scope 1d-span from initializer list, else like c_make(Span, ...).
 #define cspan_make(Span, ...) \
-    cspan_from_n(c_make_array(Span##_value, __VA_ARGS__), \
-                 sizeof((Span##_value[])__VA_ARGS__)/sizeof(Span##_value))
+    ((Span)cspan_from_n(c_make_array(Span##_value, __VA_ARGS__), \
+                 sizeof((Span##_value[])__VA_ARGS__)/sizeof(Span##_value)))
 
 // Make 1d-span from a c-array.
 #define cspan_from_array(array) \
@@ -204,6 +204,8 @@ typedef enum {c_ROWMAJOR, c_COLMAJOR, c_STRIDED} cspan_layout;
 #define cspan_md(dataptr, ...) \
     cspan_md_layout(c_ROWMAJOR, dataptr, __VA_ARGS__)
 
+// Span2 sp1 = cspan_md(data, 30, 50);
+// Span2 sp2 = {data, cspan_shape(15, 25), cspan_strides(50*2, 2)}; // every second in each dim
 #define cspan_shape(...) {__VA_ARGS__}
 #define cspan_strides(...) {.d={__VA_ARGS__}}
 
@@ -274,24 +276,17 @@ typedef enum {c_ROWMAJOR, c_COLMAJOR, c_STRIDED} cspan_layout;
      .stride=c_literal(cspan_tuple1){.d={(self)->stride.d[3]}}}
 
 #define cspan_print(...) c_MACRO_OVERLOAD(cspan_print, __VA_ARGS__)
-#if 0
-#define cspan_print_2(Span, span) /* c11 */ \
-    cspan_print_3(Span, span, _Generic(*(span).data, \
-        float:"%g", double:"%g", \
-        uint8_t:"%d", int8_t:"%d", int16_t:"%d", \
-        int32_t:"%" PRIi32, int64_t:"%" PRIi64))
-#endif
-#define cspan_print_3(Span, span, fmt) \
-    cspan_print_4(Span, span, fmt, stdout)
-#define cspan_print_4(Span, span, fmt, fp) \
-    cspan_print_5(Span, span, fmt, fp, "[]")
-#define cspan_print_5(Span, span, fmt, fp, brackets) \
-    cspan_print_6(Span, span, fmt, fp, brackets, c_EXPAND)
-#define cspan_print_complex(Span, span, prec, fp) \
-    cspan_print_6(Span, span, "%." #prec "f%+." #prec "fi", fp, "[]", cspan_CMPLX_FLD)
+#define cspan_print_3(Span, fmt, span) \
+    cspan_print_4(Span, fmt, span, stdout)
+#define cspan_print_4(Span, fmt, span, fp) \
+    cspan_print_5(Span, fmt, span, fp, "[]")
+#define cspan_print_5(Span, fmt, span, fp, brackets) \
+    cspan_print_6(Span, fmt, span, fp, brackets, c_EXPAND)
+#define cspan_print_complex(Span, prec, span, fp) \
+    cspan_print_6(Span, "%." #prec "f%+." #prec "fi", span, fp, "[]", cspan_CMPLX_FLD)
 #define cspan_CMPLX_FLD(x) creal(x), cimag(x)
 
-#define cspan_print_6(Span, span, fmt, fp, brackets, field) do { \
+#define cspan_print_6(Span, fmt, span, fp, brackets, field) do { \
     const Span _s = span; \
     const char *_f = fmt, *_b = brackets; \
     FILE* _fp = fp; \
@@ -360,6 +355,7 @@ STC_API isize _cspan_slice(_istride oshape[], _istride ostride[], int* orank,
                            const isize args[][3], int rank);
 STC_API _istride* _cspan_shape2stride(cspan_layout layout, _istride shape[], int rank);
 STC_API bool _cspan_is_layout(cspan_layout layout, const _istride shape[], const _istride strides[], int rank);
+
 #endif // STC_CSPAN_H_INCLUDED
 
 /* --------------------- IMPLEMENTATION --------------------- */
